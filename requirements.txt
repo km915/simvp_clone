@@ -1,0 +1,23 @@
+colorama==0.4.6
+filelock @ file:///home/conda/feedstock_root/build_artifacts/filelock_1781380989965/work
+fsspec @ file:///home/conda/feedstock_root/build_artifacts/fsspec_1781615776425/work
+ImageIO==2.37.3
+Jinja2 @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_jinja2_1764517220/work
+lazy-loader==0.5
+MarkupSafe @ file:///D:/bld/markupsafe_1772444957229/work
+mpmath @ file:///home/conda/feedstock_root/build_artifacts/mpmath_1773661943568/work
+networkx @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_networkx_1765215107/work
+numpy @ file:///D:/bld/bld/rattler-build_numpy_1779169232/work/dist/numpy-2.4.6-cp314-cp314-win_amd64.whl#sha256=1a9a3f59aabe32106684b68bdb28308b3ffb3154b9cf447122bab092667eb60b
+optree @ file:///D:/bld/optree_1778047649138/work
+packaging==26.2
+pillow==12.2.0
+pybind11 @ file:///D:/bld/bld/rattler-build_pybind11_1775004608/work
+pybind11-global @ file:///D:/bld/bld/rattler-build_pybind11-global_1775004608/work
+scikit-image==0.26.0
+scipy==1.18.0
+setuptools==81.0.0
+sympy @ file:///home/conda/feedstock_root/build_artifacts/sympy_1771952241027/work
+tifffile==2026.6.1
+torch @ file:///D:/bld/libtorch_1781830663945/work
+tqdm==4.68.3
+typing_extensions @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_typing_extensions_1756220668/work

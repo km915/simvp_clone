@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Data
+data/
+
+# Results
+results/
+checkpoints/
+work_dirs/
+logs/
+
+# Models
+*.pth
+*.pt
+*.ckpt
+
+# Archives
+*.zip
+*.tar
+*.gz
+
+# Environments
+.env
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
