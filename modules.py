@@ -237,3 +237,51 @@ class ConvCfCIncep(nn.Module):
         #            for t, h_t in enumerate(hidden_states)], dim=1)    //flow and letting the model learn residual corrections rather than full reconstructions.
         out = out.reshape(B, TC, H, W)
         return out
+    
+
+#for encoder & decoder
+class CfCTemporalCell(nn.Module):
+    """
+    CfC cell for use in CfCEncoder and CfCDecoder.
+    Takes per-frame spatial features and mixes them with a running hidden state.
+    Simpler backbone than ConvCfCIncepCell since spatial processing already
+    happened in the conv stack before this cell is called.
+    """
+    def __init__(self, channel_hid):
+        super(CfCTemporalCell, self).__init__()
+
+        # backbone takes [frame_latent, hidden] cat
+        self.backbone = nn.Sequential(
+            nn.Conv2d(channel_hid * 2, channel_hid, kernel_size=3, padding=1),
+            nn.GroupNorm(8, channel_hid),
+            nn.SiLU(),
+            nn.Conv2d(channel_hid, channel_hid, kernel_size=3, padding=1),
+            nn.GroupNorm(8, channel_hid),
+            nn.SiLU(),
+        )
+
+        # CfC heads — same as ConvCfCCell
+        self.ff1    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # g
+        self.ff2    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # h
+        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # f part 1
+        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # f part 2
+
+        self.tanh    = nn.Tanh()
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x_t, h, ts=1.0):
+        """
+        x_t: (B, channel_hid, H, W) — spatial feature of current frame
+        h:   (B, channel_hid, H, W) — hidden state from previous frame
+        """
+        combined = torch.cat([x_t, h], dim=1)
+        feat     = self.backbone(combined)
+
+        ff1      = self.tanh(self.ff1(feat))
+        ff2      = self.tanh(self.ff2(feat))
+        t_a      = self.time_a(feat)
+        t_b      = self.time_b(feat)
+        t_interp = self.sigmoid(t_a * ts + t_b)
+
+        new_h = ff1 * (1.0 - t_interp) + t_interp * ff2
+        return new_h

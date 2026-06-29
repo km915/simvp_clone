@@ -62,7 +62,7 @@ class Exp:
     def _build_model(self):
         args = self.args
         self.model = SimVP(tuple(args.in_shape), args.hid_S,
-                   args.hid_T, args.N_S, args.N_T, translator=args.translator).to(self.device)      # added translator=args.translator
+                   args.hid_T, args.N_S, args.N_T, translator=args.translator, use_cfc_encdec=args.use_cfc_encdec).to(self.device)      # added translator=args.translator
 
     def _get_data(self):
         config = self.args.__dict__
