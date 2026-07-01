@@ -212,29 +212,67 @@ class ConvCfCIncepCell(nn.Module):
 class ConvCfCIncep(nn.Module):
     """
     CfC translator with Inception-style multi-scale backbone.
-    Drop-in replacement for ConvCfC — identical interface.
+    Fixed: chunks by actual frame count T, not N_T.
+    Each CfC step corresponds to exactly one real encoder frame.
     """
-    def __init__(self, channel_in, channel_hid, N_T, groups=8):
+    def __init__(self, channel_in, channel_hid, N_T, groups=8, T=10, C_per_frame=64):
         super(ConvCfCIncep, self).__init__()
-        self.N_T  = N_T
-        self.cell = ConvCfCIncepCell(channel_in // N_T, channel_hid, groups=groups)
-        self.output_proj = nn.Conv2d(channel_hid, channel_in // N_T, kernel_size=1)
+        self.N_T = N_T
+        self.T = T                    # actual number of input frames
+        self.C_per_frame = C_per_frame  # hid_S — channels per frame from encoder
 
-    def forward(self, x):
+        # cell input is one frame's features: C_per_frame channels
+        self.cell     = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups)  # forward
+        self.bwd_cell = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups)  # backward
+        # output_proj now takes 2*channel_hid (fwd + bwd concatenated)
+        self.output_proj = nn.Conv2d(channel_hid*2, C_per_frame, kernel_size=1)
+
+        # project each hidden state back to C_per_frame channels
+        # self.output_proj = nn.Conv2d(channel_hid, C_per_frame, kernel_size=1)
+
+    # def forward(self, x):
+        # # x: (B, T*C_per_frame, H, W)
+        # B, TC, H, W = x.shape
+
+        # # split into T chunks of C_per_frame each — one real frame per step
+        # x_steps = torch.chunk(x, self.T, dim=1)  # T tensors of (B, C_per_frame, H, W)
+
+        # h = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
+
+        # hidden_states = []
+        # for t in range(self.T):
+        #     h = self.cell(x_steps[t], h, ts=1.0)
+        #     hidden_states.append(h)
+
+        # # project each hidden state back and stack
+        # out = torch.stack([self.output_proj(h_t) for h_t in hidden_states], dim=1)
+        # out = out.reshape(B, TC, H, W)
+        # return out
+    
+    def forward(self, x):                                                       #backward pass implemetation:
         B, TC, H, W = x.shape
-        C = TC // self.N_T
+        x_steps = torch.chunk(x, self.T, dim=1)
 
-        x_steps = torch.chunk(x, self.N_T, dim=1)
-        h = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
+        # forward pass: frames 0 -> T-1
+        h_fwd = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
+        fwd_hidden = []
+        for t in range(self.T):
+            h_fwd = self.cell(x_steps[t], h_fwd, ts=1.0)
+            fwd_hidden.append(h_fwd)
 
-        hidden_states = []
-        for t in range(self.N_T):
-            h = self.cell(x_steps[t], h, ts=1.0)
-            hidden_states.append(h)
+        # backward pass: frames T-1 -> 0
+        h_bwd = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
+        bwd_hidden = []
+        for t in reversed(range(self.T)):
+            h_bwd = self.bwd_cell(x_steps[t], h_bwd, ts=1.0)
+            bwd_hidden.append(h_bwd)
+        bwd_hidden = list(reversed(bwd_hidden))  # reorder to match frame indices
 
-        out = torch.stack([self.output_proj(h_t) for h_t in hidden_states], dim=1)
-        # out = torch.stack([self.output_proj(h_t) + x_steps[t]         //adds a direct path from input to output at each timestep, helping gradients 
-        #            for t, h_t in enumerate(hidden_states)], dim=1)    //flow and letting the model learn residual corrections rather than full reconstructions.
+        # combine: project concatenated fwd+bwd hidden states to C_per_frame
+        out = torch.stack([
+            self.output_proj(torch.cat([fwd_hidden[t], bwd_hidden[t]], dim=1))
+            for t in range(self.T)
+        ], dim=1)
         out = out.reshape(B, TC, H, W)
         return out
     

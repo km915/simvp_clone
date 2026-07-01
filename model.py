@@ -203,7 +203,7 @@ class Decoder(nn.Module):
 #         return y
 
 class Mid_Xnet(nn.Module):
-    def __init__(self, channel_in, channel_hid, N_T, incep_ker=[3,5,7,11], groups=8, translator='inception'):
+    def __init__(self, channel_in, channel_hid, N_T, incep_ker=[3,5,7,11], groups=8, translator='inception', hid_S=64):
         super(Mid_Xnet, self).__init__()
 
         self.N_T = N_T
@@ -227,7 +227,8 @@ class Mid_Xnet(nn.Module):
             self.cfc = ConvCfC(channel_in, channel_hid, N_T)
 
         elif translator == 'cfcincep':
-            self.cfc = ConvCfCIncep(channel_in, channel_hid, N_T, groups=groups)
+            T = channel_in // hid_S   # recover actual frame count: channel_in = T * hid_S
+            self.cfc = ConvCfCIncep(channel_in, channel_hid, N_T, groups=groups, T=T, C_per_frame=hid_S)
 
         
 
@@ -266,7 +267,7 @@ class SimVP(nn.Module):
         T, C, H, W = shape_in
         self.use_cfc_encdec = use_cfc_encdec
         self.enc = Encoder(C, hid_S, N_S, use_cfc=use_cfc_encdec)
-        self.hid = Mid_Xnet(T*hid_S, hid_T, N_T, incep_ker, groups, translator=translator)
+        self.hid = Mid_Xnet(T*hid_S, hid_T, N_T, incep_ker, groups, translator=translator, hid_S=hid_S)
         self.dec = Decoder(hid_S, C, N_S, use_cfc=use_cfc_encdec)
 
     def forward(self, x_raw):
