@@ -4,6 +4,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
 
 class KTHDataset(Dataset):
     """
