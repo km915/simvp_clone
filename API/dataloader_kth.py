@@ -7,21 +7,13 @@ from torch.utils.data import Dataset, DataLoader
 
 class KTHDataset(Dataset):
     """
-    KTH Action Recognition Dataset.
-    Folder structure expected:
-        data_root/kth/boxing/*.avi
-        data_root/kth/handclapping/*.avi
-        data_root/kth/handwaving/*.avi
-        data_root/kth/jogging/*.avi
-        data_root/kth/running/*.avi
-        data_root/kth/walking/*.avi
-
-    Following SimVP paper: persons 1-16 for train, 17-25 for test.
-    Input: 10 frames, Output: 20 frames (or 40).
-    Image size: 128x128, grayscale.
+    KTH Action Recognition Dataset — lazy loading version.
+    Stores only (video_path, start_frame) pairs in memory.
+    Reads frames on demand in __getitem__.
     """
 
-    ACTIONS = ['boxing', 'handclapping', 'handwaving', 'jogging', 'running', 'walking']
+    ACTIONS = ['boxing', 'handclapping', 'handwaving',
+               'jogging', 'running', 'walking']
 
     def __init__(self, root, is_train=True,
                  n_frames_input=10, n_frames_output=20,
@@ -36,94 +28,102 @@ class KTHDataset(Dataset):
         self.mean = 0
         self.std = 1
 
-        # persons 1-16 train, 17-25 test — following SimVP paper
-        if is_train:
-            self.persons = list(range(1, 17))
-        else:
-            self.persons = list(range(17, 26))
+        # persons 1-16 train, 17-25 test
+        self.persons = list(range(1, 17)) if is_train else list(range(17, 26))
 
-        self.clips = self._build_clips()
+        # store (video_path, start_frame_index) — no pixel data in memory
+        self.samples = self._build_index()
+        print(f'KTH {"train" if is_train else "test"}: '
+              f'{len(self.samples)} clips indexed (lazy loading)')
 
-    def _build_clips(self):
+    def _build_index(self):
         """
-        Read all videos, extract all valid clips of length n_frames_total.
-        Returns list of numpy arrays of shape (n_frames_total, H, W).
+        Walk all videos, count their frames, store clip indices.
+        Does NOT read pixel data.
         """
-        clips = []
+        samples = []
         for action in self.ACTIONS:
             action_dir = os.path.join(self.root, action)
             if not os.path.exists(action_dir):
-                print(f'Warning: {action_dir} not found, skipping.')
                 continue
 
             for fname in sorted(os.listdir(action_dir)):
                 if not fname.endswith('.avi'):
                     continue
-
-                # KTH filenames: person01_boxing_d1_uncomp.avi
-                # extract person number
                 try:
                     person_id = int(fname.split('_')[0].replace('person', ''))
                 except:
                     continue
-
                 if person_id not in self.persons:
                     continue
 
                 video_path = os.path.join(action_dir, fname)
-                frames = self._read_video(video_path)
 
-                if frames is None or len(frames) < self.n_frames_total:
+                # only open video to count frames — no pixel reads
+                cap = cv2.VideoCapture(video_path)
+                n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap.release()
+
+                if n_frames < self.n_frames_total:
                     continue
 
-                # extract all valid clips with stride 1
-                for start in range(0, len(frames) - self.n_frames_total + 1,
+                # store one index entry per valid clip
+                for start in range(0, n_frames - self.n_frames_total + 1,
                                    self.n_frames_total):
-                    clip = frames[start: start + self.n_frames_total]
-                    clips.append(clip)
+                    samples.append((video_path, start))
 
-        print(f'KTH {"train" if self.is_train else "test"}: {len(clips)} clips')
-        return clips
+        return samples
 
-    def _read_video(self, path):
-        cap = cv2.VideoCapture(path)
+    def _read_clip(self, video_path, start):
+        """Read exactly n_frames_total frames starting at `start`."""
+        cap = cv2.VideoCapture(video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+
         frames = []
-        while True:
+        for _ in range(self.n_frames_total):
             ret, frame = cap.read()
             if not ret:
                 break
-            # convert to grayscale, resize to image_size x image_size
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             frame = cv2.resize(frame, (self.image_size, self.image_size))
-            frames.append(frame)
+            frames.append(frame.astype(np.float32))
         cap.release()
-        return np.array(frames, dtype=np.float32) if frames else None
+
+        # pad with last frame if video ended early
+        while len(frames) < self.n_frames_total:
+            frames.append(frames[-1] if frames else
+                          np.zeros((self.image_size, self.image_size),
+                                   dtype=np.float32))
+
+        return np.array(frames)  # (n_frames_total, H, W)
 
     def __len__(self):
-        return len(self.clips)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        clip = self.clips[idx]  # (n_frames_total, H, W)
+        video_path, start = self.samples[idx]
+        clip = self._read_clip(video_path, start)  # (T, H, W)
 
-        # normalize to [0, 1]
         clip = clip / 255.0
+        clip = clip[:, np.newaxis, :, :]  # (T, 1, H, W)
 
-        # add channel dim: (n_frames_total, 1, H, W)
-        clip = clip[:, np.newaxis, :, :]
-
-        input_frames  = torch.from_numpy(clip[:self.n_frames_input]).float()
-        output_frames = torch.from_numpy(clip[self.n_frames_input:]).float()
+        input_frames  = torch.from_numpy(
+            clip[:self.n_frames_input]).float()
+        output_frames = torch.from_numpy(
+            clip[self.n_frames_input:]).float()
 
         return input_frames, output_frames
 
 
-def load_data(batch_size, val_batch_size, data_root, num_workers,
-              n_frames_output=20, **kwargs):
+def load_data(batch_size, val_batch_size, data_root,
+              num_workers, n_frames_output=20, **kwargs):
 
     train_set = KTHDataset(root=data_root, is_train=True,
-                           n_frames_input=10, n_frames_output=n_frames_output)
+                           n_frames_input=10,
+                           n_frames_output=n_frames_output)
     test_set  = KTHDataset(root=data_root, is_train=False,
-                           n_frames_input=10, n_frames_output=n_frames_output)
+                           n_frames_input=10,
+                           n_frames_output=n_frames_output)
 
     dataloader_train = DataLoader(
         train_set, batch_size=batch_size, shuffle=True,
