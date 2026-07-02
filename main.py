@@ -37,6 +37,7 @@ def create_parser():
 
     #added translator
     parser.add_argument('--translator', type=str, default='inception', choices=['inception', 'cfc', 'cfcincep'])
+    parser.add_argument('--bidirectional', action='store_true', default=False)          #added uni/bidirectional toggle
     return parser
 
 

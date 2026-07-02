@@ -215,17 +215,21 @@ class ConvCfCIncep(nn.Module):
     Fixed: chunks by actual frame count T, not N_T.
     Each CfC step corresponds to exactly one real encoder frame.
     """
-    def __init__(self, channel_in, channel_hid, N_T, groups=8, T=10, C_per_frame=64):
+    def __init__(self, channel_in, channel_hid, N_T, groups=8, T=10,
+             C_per_frame=64, bidirectional=False):
         super(ConvCfCIncep, self).__init__()
         self.N_T = N_T
-        self.T = T                    # actual number of input frames
-        self.C_per_frame = C_per_frame  # hid_S — channels per frame from encoder
+        self.T = T
+        self.C_per_frame = C_per_frame
+        self.bidirectional = bidirectional
 
-        # cell input is one frame's features: C_per_frame channels
-        self.cell     = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups)  # forward
-        self.bwd_cell = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups)  # backward
-        # output_proj now takes 2*channel_hid (fwd + bwd concatenated)
-        self.output_proj = nn.Conv2d(channel_hid*2, C_per_frame, kernel_size=1)
+        self.cell = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups)
+
+        if bidirectional:
+            self.bwd_cell = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups)
+            self.output_proj = nn.Conv2d(channel_hid * 2, C_per_frame, kernel_size=1)
+        else:
+            self.output_proj = nn.Conv2d(channel_hid, C_per_frame, kernel_size=1)
 
         # project each hidden state back to C_per_frame channels
         # self.output_proj = nn.Conv2d(channel_hid, C_per_frame, kernel_size=1)
@@ -249,30 +253,31 @@ class ConvCfCIncep(nn.Module):
         # out = out.reshape(B, TC, H, W)
         # return out
     
-    def forward(self, x):                                                       #backward pass implemetation:
+    def forward(self, x):
         B, TC, H, W = x.shape
         x_steps = torch.chunk(x, self.T, dim=1)
+        h = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
 
-        # forward pass: frames 0 -> T-1
-        h_fwd = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
         fwd_hidden = []
         for t in range(self.T):
-            h_fwd = self.cell(x_steps[t], h_fwd, ts=1.0)
-            fwd_hidden.append(h_fwd)
+            h = self.cell(x_steps[t], h, ts=1.0)
+            fwd_hidden.append(h)
 
-        # backward pass: frames T-1 -> 0
-        h_bwd = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
-        bwd_hidden = []
-        for t in reversed(range(self.T)):
-            h_bwd = self.bwd_cell(x_steps[t], h_bwd, ts=1.0)
-            bwd_hidden.append(h_bwd)
-        bwd_hidden = list(reversed(bwd_hidden))  # reorder to match frame indices
+        if self.bidirectional:
+            h_bwd = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
+            bwd_hidden = []
+            for t in reversed(range(self.T)):
+                h_bwd = self.bwd_cell(x_steps[t], h_bwd, ts=1.0)
+                bwd_hidden.append(h_bwd)
+            bwd_hidden = list(reversed(bwd_hidden))
 
-        # combine: project concatenated fwd+bwd hidden states to C_per_frame
-        out = torch.stack([
-            self.output_proj(torch.cat([fwd_hidden[t], bwd_hidden[t]], dim=1))
-            for t in range(self.T)
-        ], dim=1)
+            out = torch.stack([
+                self.output_proj(torch.cat([fwd_hidden[t], bwd_hidden[t]], dim=1))
+                for t in range(self.T)
+            ], dim=1)
+        else:
+            out = torch.stack([self.output_proj(h_t) for h_t in fwd_hidden], dim=1)
+
         out = out.reshape(B, TC, H, W)
         return out
     
