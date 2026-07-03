@@ -45,9 +45,9 @@ class KITTIDataset(Dataset):
         # 90/10 split by drive folder
         split_idx = max(1, int(len(drive_folders) * 0.9))
         if self.is_train:
-            drive_folders = drive_folders[:split_idx]
-        else:
             drive_folders = drive_folders[split_idx:]
+        else:
+            drive_folders = drive_folders[:split_idx]
 
         samples = []
         for folder in drive_folders:
