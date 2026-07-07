@@ -30,6 +30,7 @@ def create_parser():
     parser.add_argument('--N_T', default=8, type=int)
     parser.add_argument('--groups', default=4, type=int)
     parser.add_argument('--use_cfc_encdec', action='store_true', default=False)
+    parser.add_argument('--use_dfa', action='store_true', default=False)   # DFA-CfN gating toggle
 
     # Training parameters
     parser.add_argument('--epochs', default=51, type=int)

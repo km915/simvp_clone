@@ -1,5 +1,6 @@
 from torch import nn
 import torch
+import math
 
 class BasicConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding, transpose=False, act_norm=False):
@@ -175,99 +176,98 @@ class MultiScaleConv(nn.Module):
 class ConvCfCIncepCell(nn.Module):
     """
     CfC cell with Inception-style multi-scale backbone.
-    Identical to ConvCfCCell except backbone uses MultiScaleConv
-    instead of plain 3x3 convs.
+    use_dfa=True switches the gate from a per-step-only computation to the
+    DFA-CfN dynamic feature accumulation form (Liang et al., NIALIM/DFA-CfN):
+    the raw gating signal is accumulated across timesteps into M, and the
+    sigmoid gate is computed from the accumulator instead of the current
+    step alone.
     """
-    def __init__(self, channel_in, channel_hid, groups=8):
+    def __init__(self, channel_in, channel_hid, groups=8, use_dfa=False):
         super(ConvCfCIncepCell, self).__init__()
+        self.use_dfa = use_dfa
 
         self.backbone = nn.Sequential(
             MultiScaleConv(channel_in + channel_hid, channel_hid, groups=groups),
             MultiScaleConv(channel_hid, channel_hid, groups=groups),
         )
 
-        # Same four heads as ConvCfCCell — unchanged
         self.ff1    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # g
         self.ff2    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # h
-        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # f part 1
-        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # f part 2
+        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # decay term a(.)
+        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # nonlinear term c(.)
 
         self.tanh    = nn.Tanh()
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x_t, h, ts=1.0):
+    @staticmethod
+    def _omega_ts(ts):
+        # NIALIM interval-correction factor, DFA-CfN eq.(50): exp(ts*(1 - ln ts))
+        if ts <= 0:
+            return 1.0
+        return math.exp(ts * (1.0 - math.log(ts)))
+
+    def forward(self, x_t, h, ts=1.0, M=None):
         combined = torch.cat([x_t, h], dim=1)
         feat = self.backbone(combined)
 
-        ff1      = self.tanh(self.ff1(feat))
-        ff2      = self.tanh(self.ff2(feat))
-        t_a      = self.time_a(feat)
-        t_b      = self.time_b(feat)
-        t_interp = self.sigmoid(t_a * ts + t_b)
+        ff1 = self.tanh(self.ff1(feat))
+        ff2 = self.tanh(self.ff2(feat))
+        t_a = self.time_a(feat)
+        t_b = self.time_b(feat)
 
-        new_h = ff1 * (1.0 - t_interp) + t_interp * ff2
-        return new_h
+        if self.use_dfa:
+            omega_ts = self._omega_ts(ts)
+            Tinterp = t_a * omega_ts + t_b            # merged decay + nonlinear term
+            M = Tinterp if M is None else M + Tinterp  # accumulate across steps
+            gate = self.sigmoid(M)
+        else:
+            gate = self.sigmoid(t_a * ts + t_b)         # original, unchanged behavior
+            M = None
+
+        new_h = ff1 * (1.0 - gate) + gate * ff2
+        return new_h, M
 
 
 class ConvCfCIncep(nn.Module):
     """
     CfC translator with Inception-style multi-scale backbone.
-    Fixed: chunks by actual frame count T, not N_T.
-    Each CfC step corresponds to exactly one real encoder frame.
+    Chunks by actual frame count T; each CfC step = one real encoder frame.
+    use_dfa threads through to both the forward and (if bidirectional) backward cell.
     """
     def __init__(self, channel_in, channel_hid, N_T, groups=8, T=10,
-             C_per_frame=64, bidirectional=False):
+                 C_per_frame=64, bidirectional=False, use_dfa=False):
         super(ConvCfCIncep, self).__init__()
         self.N_T = N_T
         self.T = T
         self.C_per_frame = C_per_frame
         self.bidirectional = bidirectional
+        self.use_dfa = use_dfa
 
-        self.cell = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups)
+        self.cell = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups, use_dfa=use_dfa)
 
         if bidirectional:
-            self.bwd_cell = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups)
+            self.bwd_cell = ConvCfCIncepCell(C_per_frame, channel_hid, groups=groups, use_dfa=use_dfa)
             self.output_proj = nn.Conv2d(channel_hid * 2, C_per_frame, kernel_size=1)
         else:
             self.output_proj = nn.Conv2d(channel_hid, C_per_frame, kernel_size=1)
 
-        # project each hidden state back to C_per_frame channels
-        # self.output_proj = nn.Conv2d(channel_hid, C_per_frame, kernel_size=1)
-
-    # def forward(self, x):
-        # # x: (B, T*C_per_frame, H, W)
-        # B, TC, H, W = x.shape
-
-        # # split into T chunks of C_per_frame each — one real frame per step
-        # x_steps = torch.chunk(x, self.T, dim=1)  # T tensors of (B, C_per_frame, H, W)
-
-        # h = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
-
-        # hidden_states = []
-        # for t in range(self.T):
-        #     h = self.cell(x_steps[t], h, ts=1.0)
-        #     hidden_states.append(h)
-
-        # # project each hidden state back and stack
-        # out = torch.stack([self.output_proj(h_t) for h_t in hidden_states], dim=1)
-        # out = out.reshape(B, TC, H, W)
-        # return out
-    
     def forward(self, x):
         B, TC, H, W = x.shape
         x_steps = torch.chunk(x, self.T, dim=1)
         h = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
+        M = None
 
         fwd_hidden = []
         for t in range(self.T):
-            h = self.cell(x_steps[t], h, ts=1.0)
+            h, M = self.cell(x_steps[t], h, ts=1.0, M=M)
             fwd_hidden.append(h)
 
         if self.bidirectional:
             h_bwd = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
+            M_bwd = None
             bwd_hidden = []
             for t in reversed(range(self.T)):
-                h_bwd = self.bwd_cell(x_steps[t], h_bwd, ts=1.0)
+                h_bwd, M_bwd = self.bwd_cell(x_steps[t], h_bwd, ts=1.0, M=M_bwd)
                 bwd_hidden.append(h_bwd)
             bwd_hidden = list(reversed(bwd_hidden))
 
@@ -285,15 +285,12 @@ class ConvCfCIncep(nn.Module):
 #for encoder & decoder
 class CfCTemporalCell(nn.Module):
     """
-    CfC cell for use in CfCEncoder and CfCDecoder.
-    Takes per-frame spatial features and mixes them with a running hidden state.
-    Simpler backbone than ConvCfCIncepCell since spatial processing already
-    happened in the conv stack before this cell is called.
+    CfC cell for CfCEncoder/CfCDecoder. use_dfa applies the same dynamic
+    feature accumulation gating as ConvCfCIncepCell.
     """
-    def __init__(self, channel_hid):
+    def __init__(self, channel_hid, use_dfa=False):
         super(CfCTemporalCell, self).__init__()
-
-        # backbone takes [frame_latent, hidden] cat
+        self.use_dfa = use_dfa
         self.backbone = nn.Sequential(
             nn.Conv2d(channel_hid * 2, channel_hid, kernel_size=3, padding=1),
             nn.GroupNorm(8, channel_hid),
@@ -302,29 +299,35 @@ class CfCTemporalCell(nn.Module):
             nn.GroupNorm(8, channel_hid),
             nn.SiLU(),
         )
-
-        # CfC heads — same as ConvCfCCell
-        self.ff1    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # g
-        self.ff2    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # h
-        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # f part 1
-        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # f part 2
-
+        self.ff1    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
+        self.ff2    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
+        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
+        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
         self.tanh    = nn.Tanh()
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x_t, h, ts=1.0):
-        """
-        x_t: (B, channel_hid, H, W) — spatial feature of current frame
-        h:   (B, channel_hid, H, W) — hidden state from previous frame
-        """
+    @staticmethod
+    def _omega_ts(ts):
+        if ts <= 0:
+            return 1.0
+        return math.exp(ts * (1.0 - math.log(ts)))
+
+    def forward(self, x_t, h, ts=1.0, M=None):
         combined = torch.cat([x_t, h], dim=1)
-        feat     = self.backbone(combined)
+        feat = self.backbone(combined)
+        ff1 = self.tanh(self.ff1(feat))
+        ff2 = self.tanh(self.ff2(feat))
+        t_a = self.time_a(feat)
+        t_b = self.time_b(feat)
 
-        ff1      = self.tanh(self.ff1(feat))
-        ff2      = self.tanh(self.ff2(feat))
-        t_a      = self.time_a(feat)
-        t_b      = self.time_b(feat)
-        t_interp = self.sigmoid(t_a * ts + t_b)
+        if self.use_dfa:
+            omega_ts = self._omega_ts(ts)
+            Tinterp = t_a * omega_ts + t_b
+            M = Tinterp if M is None else M + Tinterp
+            gate = self.sigmoid(M)
+        else:
+            gate = self.sigmoid(t_a * ts + t_b)
+            M = None
 
-        new_h = ff1 * (1.0 - t_interp) + t_interp * ff2
-        return new_h
+        new_h = ff1 * (1.0 - gate) + gate * ff2
+        return new_h, M
