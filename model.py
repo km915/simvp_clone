@@ -170,6 +170,7 @@ class Decoder(nn.Module):
 #         y = z.reshape(B, T, C, H, W)
 #         return y
 
+
 class Mid_Xnet(nn.Module):
     def __init__(self, channel_in, channel_hid, N_T, incep_ker=[3,5,7,11], groups=8,
                  translator='inception', hid_S=64, bidirectional=False, use_dfa=False):
@@ -178,8 +179,18 @@ class Mid_Xnet(nn.Module):
         self.translator = translator
 
         if translator == 'inception':
-            # unchanged
-            ...
+            enc_layers = [Inception(channel_in, channel_hid//2, channel_hid, incep_ker=incep_ker, groups=groups)]
+            for i in range(1, N_T-1):
+                enc_layers.append(Inception(channel_hid, channel_hid//2, channel_hid, incep_ker=incep_ker, groups=groups))
+            enc_layers.append(Inception(channel_hid, channel_hid//2, channel_hid, incep_ker=incep_ker, groups=groups))
+
+            dec_layers = [Inception(channel_hid, channel_hid//2, channel_hid, incep_ker=incep_ker, groups=groups)]
+            for i in range(1, N_T-1):
+                dec_layers.append(Inception(2*channel_hid, channel_hid//2, channel_hid, incep_ker=incep_ker, groups=groups))
+            dec_layers.append(Inception(2*channel_hid, channel_hid//2, channel_in, incep_ker=incep_ker, groups=groups))
+
+            self.enc = nn.Sequential(*enc_layers)
+            self.dec = nn.Sequential(*dec_layers)
         elif translator == 'cfc':
             self.cfc = ConvCfC(channel_in, channel_hid, N_T)
         elif translator == 'cfcincep':
@@ -214,7 +225,7 @@ class Mid_Xnet(nn.Module):
 
         y = z.reshape(B, T, C, H, W)
         return y
-
+    
 
 class SimVP(nn.Module):
     def __init__(self, shape_in, hid_S=16, hid_T=256, N_S=4, N_T=8,
