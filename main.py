@@ -40,6 +40,10 @@ def create_parser():
     #added translator
     parser.add_argument('--translator', type=str, default='inception', choices=['inception', 'cfc', 'cfcincep'])
     parser.add_argument('--bidirectional', action='store_true', default=False)          #added uni/bidirectional toggle
+
+    #added irregular sampling
+    parser.add_argument('--irregular', action='store_true', default=False)
+    parser.add_argument('--g_max', type=int, default=1)
     return parser
 
 

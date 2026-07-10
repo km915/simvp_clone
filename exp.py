@@ -1,4 +1,3 @@
-
 import os
 import os.path as osp
 import json
@@ -97,10 +96,10 @@ class Exp:
             self.model.train()
             train_pbar = tqdm(self.train_loader)
 
-            for batch_x, batch_y in train_pbar:
+            for batch_x, ts, batch_y in train_pbar:
                 self.optimizer.zero_grad()
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
-                pred_y = self.model(batch_x)
+                pred_y = self.model(batch_x, ts=ts.to(self.device))
 
                 loss = self.criterion(pred_y, batch_y)
                 train_loss.append(loss.item())
@@ -129,12 +128,12 @@ class Exp:
         self.model.eval()
         preds_lst, trues_lst, total_loss = [], [], []
         vali_pbar = tqdm(vali_loader)
-        for i, (batch_x, batch_y) in enumerate(vali_pbar):
+        for i, (batch_x, ts, batch_y) in enumerate(vali_pbar):
             if i * batch_x.shape[0] > 1000:
                 break
 
             batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
-            pred_y = self.model(batch_x)
+            pred_y = self.model(batch_x, ts=ts.to(self.device))
             list(map(lambda data, lst: lst.append(data.detach().cpu().numpy()), [
                  pred_y, batch_y], [preds_lst, trues_lst]))
 
@@ -154,8 +153,8 @@ class Exp:
     def test(self, args):
         self.model.eval()
         inputs_lst, trues_lst, preds_lst = [], [], []
-        for batch_x, batch_y in self.test_loader:
-            pred_y = self.model(batch_x.to(self.device))
+        for batch_x, ts, batch_y in self.test_loader:
+            pred_y = self.model(batch_x.to(self.device), ts=ts.to(self.device))
             list(map(lambda data, lst: lst.append(data.detach().cpu().numpy()), [
                  batch_x, batch_y, pred_y], [inputs_lst, trues_lst, preds_lst]))
 

@@ -7,7 +7,7 @@ def load_data(dataname, batch_size, val_batch_size, data_root, num_workers, **kw
     if dataname == 'taxibj':
         return load_taxibj(batch_size, val_batch_size, data_root, num_workers)
     elif dataname == 'mmnist':
-        return load_mmnist(batch_size, val_batch_size, data_root, num_workers)
+        return load_mmnist(batch_size, val_batch_size, data_root, num_workers, **kwargs)
     elif dataname == 'kth':
         return load_kth(batch_size, val_batch_size, data_root, num_workers, **kwargs)
     elif dataname == 'kitti':

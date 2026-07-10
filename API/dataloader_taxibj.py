@@ -17,7 +17,8 @@ class TrafficDataset(Dataset):
     def __getitem__(self, index):
         data = torch.tensor(self.X[index, ::]).float()
         labels = torch.tensor(self.Y[index, ::]).float()
-        return data, labels
+        ts_vec = torch.ones(data.shape[0] - 1).float()  # dummy, unused for taxibj
+        return data, ts_vec, labels
 
 def load_data(
         batch_size, val_batch_size,

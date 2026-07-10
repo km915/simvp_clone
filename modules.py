@@ -173,7 +173,6 @@ class MultiScaleConv(nn.Module):
         return self.branch_3(x) + self.branch_5(x) + self.branch_7(x) + self.branch_11(x)
 
 
-class ConvCfCIncepCell(nn.Module):
     """
     CfC cell with Inception-style multi-scale backbone.
     use_dfa=True switches the gate from a per-step-only computation to the
@@ -182,6 +181,7 @@ class ConvCfCIncepCell(nn.Module):
     sigmoid gate is computed from the accumulator instead of the current
     step alone.
     """
+class ConvCfCIncepCell(nn.Module):
     def __init__(self, channel_in, channel_hid, groups=8, use_dfa=False):
         super(ConvCfCIncepCell, self).__init__()
         self.use_dfa = use_dfa
@@ -191,20 +191,20 @@ class ConvCfCIncepCell(nn.Module):
             MultiScaleConv(channel_hid, channel_hid, groups=groups),
         )
 
-        self.ff1    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # g
-        self.ff2    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # h
-        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # decay term a(.)
-        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # nonlinear term c(.)
+        self.ff1    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
+        self.ff2    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
+        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
+        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
 
         self.tanh    = nn.Tanh()
         self.sigmoid = nn.Sigmoid()
 
     @staticmethod
     def _omega_ts(ts):
-        # NIALIM interval-correction factor, DFA-CfN eq.(50): exp(ts*(1 - ln ts))
-        if ts <= 0:
-            return 1.0
-        return math.exp(ts * (1.0 - math.log(ts)))
+        # ts: tensor, any broadcastable shape. Torch-native version of
+        # exp(ts*(1 - ln ts)); clamp avoids log(0)/negative domain errors.
+        ts = torch.clamp(ts, min=1e-6)
+        return torch.exp(ts * (1.0 - torch.log(ts)))
 
     def forward(self, x_t, h, ts=1.0, M=None):
         combined = torch.cat([x_t, h], dim=1)
@@ -217,11 +217,11 @@ class ConvCfCIncepCell(nn.Module):
 
         if self.use_dfa:
             omega_ts = self._omega_ts(ts)
-            Tinterp = t_a * omega_ts + t_b            # merged decay + nonlinear term
-            M = Tinterp if M is None else M + Tinterp  # accumulate across steps
+            Tinterp = t_a * omega_ts + t_b
+            M = Tinterp if M is None else M + Tinterp
             gate = self.sigmoid(M)
         else:
-            gate = self.sigmoid(t_a * ts + t_b)         # original, unchanged behavior
+            gate = self.sigmoid(t_a * ts + t_b)
             M = None
 
         new_h = ff1 * (1.0 - gate) + gate * ff2
@@ -251,15 +251,20 @@ class ConvCfCIncep(nn.Module):
         else:
             self.output_proj = nn.Conv2d(channel_hid, C_per_frame, kernel_size=1)
 
-    def forward(self, x):
+    def forward(self, x, ts=None):
         B, TC, H, W = x.shape
         x_steps = torch.chunk(x, self.T, dim=1)
         h = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
         M = None
 
+        def _ts_at(t):
+            if ts is None or t == 0:
+                return torch.ones(B, 1, 1, 1, device=x.device)
+            return ts[:, t - 1].view(B, 1, 1, 1)
+
         fwd_hidden = []
         for t in range(self.T):
-            h, M = self.cell(x_steps[t], h, ts=1.0, M=M)
+            h, M = self.cell(x_steps[t], h, ts=_ts_at(t), M=M)
             fwd_hidden.append(h)
 
         if self.bidirectional:
@@ -267,10 +272,13 @@ class ConvCfCIncep(nn.Module):
             M_bwd = None
             bwd_hidden = []
             for t in reversed(range(self.T)):
-                h_bwd, M_bwd = self.bwd_cell(x_steps[t], h_bwd, ts=1.0, M=M_bwd)
+                if ts is None or t == self.T - 1:
+                    ts_b = torch.ones(B, 1, 1, 1, device=x.device)
+                else:
+                    ts_b = ts[:, t].view(B, 1, 1, 1)
+                h_bwd, M_bwd = self.bwd_cell(x_steps[t], h_bwd, ts=ts_b, M=M_bwd)
                 bwd_hidden.append(h_bwd)
             bwd_hidden = list(reversed(bwd_hidden))
-
             out = torch.stack([
                 self.output_proj(torch.cat([fwd_hidden[t], bwd_hidden[t]], dim=1))
                 for t in range(self.T)
