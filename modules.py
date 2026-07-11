@@ -292,10 +292,6 @@ class ConvCfCIncep(nn.Module):
 
 #for encoder & decoder
 class CfCTemporalCell(nn.Module):
-    """
-    CfC cell for CfCEncoder/CfCDecoder. use_dfa applies the same dynamic
-    feature accumulation gating as ConvCfCIncepCell.
-    """
     def __init__(self, channel_hid, use_dfa=False):
         super(CfCTemporalCell, self).__init__()
         self.use_dfa = use_dfa
@@ -316,17 +312,18 @@ class CfCTemporalCell(nn.Module):
 
     @staticmethod
     def _omega_ts(ts):
-        if ts <= 0:
-            return 1.0
-        return math.exp(ts * (1.0 - math.log(ts)))
+        # torch-native — ts is a (B,1,1,1) tensor, not a Python float
+        ts = torch.clamp(ts, min=1e-6)
+        return torch.exp(ts * (1.0 - torch.log(ts)))
 
     def forward(self, x_t, h, ts=1.0, M=None):
         combined = torch.cat([x_t, h], dim=1)
-        feat = self.backbone(combined)
-        ff1 = self.tanh(self.ff1(feat))
-        ff2 = self.tanh(self.ff2(feat))
-        t_a = self.time_a(feat)
-        t_b = self.time_b(feat)
+        feat     = self.backbone(combined)
+
+        ff1      = self.tanh(self.ff1(feat))
+        ff2      = self.tanh(self.ff2(feat))
+        t_a      = self.time_a(feat)
+        t_b      = self.time_b(feat)
 
         if self.use_dfa:
             omega_ts = self._omega_ts(ts)
