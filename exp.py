@@ -100,6 +100,10 @@ class Exp:
                 self.optimizer.zero_grad()
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                 pred_y = self.model(batch_x, ts=ts.to(self.device))
+                # model always outputs as many frames as it received as input;
+                # slice down to match batch_y's actual frame count
+                # (no-op when n_frames_output == n_frames_input, e.g. mmnist/kth/taxibj)
+                pred_y = pred_y[:, -batch_y.shape[1]:]
 
                 loss = self.criterion(pred_y, batch_y)
                 train_loss.append(loss.item())
@@ -134,6 +138,7 @@ class Exp:
 
             batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
             pred_y = self.model(batch_x, ts=ts.to(self.device))
+            pred_y = pred_y[:, -batch_y.shape[1]:]
             list(map(lambda data, lst: lst.append(data.detach().cpu().numpy()), [
                  pred_y, batch_y], [preds_lst, trues_lst]))
 
@@ -155,6 +160,7 @@ class Exp:
         inputs_lst, trues_lst, preds_lst = [], [], []
         for batch_x, ts, batch_y in self.test_loader:
             pred_y = self.model(batch_x.to(self.device), ts=ts.to(self.device))
+            pred_y = pred_y[:, -batch_y.shape[1]:]
             list(map(lambda data, lst: lst.append(data.detach().cpu().numpy()), [
                  batch_x, batch_y, pred_y], [inputs_lst, trues_lst, preds_lst]))
 
