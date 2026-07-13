@@ -37,6 +37,7 @@ class Encoder(nn.Module):
             latents = []
             h = None
             M = None
+            step_count = 0
 
             for t in range(T):
                 frame = x[:, t]
@@ -56,7 +57,7 @@ class Encoder(nn.Module):
                 else:
                     ts_t = ts[:, t - 1].view(B, 1, 1, 1)
 
-                h, M = self.cfc_cell(lat_t, h, ts=ts_t, M=M)
+                h, M, step_count = self.cfc_cell(lat_t, h, ts=ts_t, M=M, step_count=step_count)
                 latents.append(h)
 
             latent = torch.stack(latents, dim=1)
@@ -88,6 +89,7 @@ class Decoder(nn.Module):
             B, T, C_hid, H_, W_ = hid.shape
             h = None
             M = None
+            step_count = 0
             outputs = []
 
             for t in range(T):
@@ -101,7 +103,7 @@ class Decoder(nn.Module):
                 else:
                     ts_t = ts[:, t - 1].view(B, 1, 1, 1)
 
-                h, M = self.cfc_cell(hid_t, h, ts=ts_t, M=M)
+                h, M, step_count = self.cfc_cell(hid_t, h, ts=ts_t, M=M, step_count=step_count)
 
                 feat = h
                 for i in range(0, len(self.dec)-1):

@@ -181,7 +181,16 @@ class MultiScaleConv(nn.Module):
     sigmoid gate is computed from the accumulator instead of the current
     step alone.
     """
+
+
 class ConvCfCIncepCell(nn.Module):
+    """
+    CfC cell with Inception-style multi-scale backbone.
+    use_dfa=True switches the gate from a per-step-only computation to the
+    DFA-CfN dynamic feature accumulation form. M is tracked as a running
+    AVERAGE (not raw sum) to prevent unbounded growth from saturating the
+    sigmoid gate over long recurrences.
+    """
     def __init__(self, channel_in, channel_hid, groups=8, use_dfa=False):
         super(ConvCfCIncepCell, self).__init__()
         self.use_dfa = use_dfa
@@ -191,22 +200,25 @@ class ConvCfCIncepCell(nn.Module):
             MultiScaleConv(channel_hid, channel_hid, groups=groups),
         )
 
-        self.ff1    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
-        self.ff2    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
-        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
-        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)
+        self.ff1    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # g
+        self.ff2    = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # h
+        self.time_a = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # decay term a(.)
+        self.time_b = nn.Conv2d(channel_hid, channel_hid, kernel_size=1)  # nonlinear term c(.)
 
         self.tanh    = nn.Tanh()
         self.sigmoid = nn.Sigmoid()
 
     @staticmethod
     def _omega_ts(ts):
-        # ts: tensor, any broadcastable shape. Torch-native version of
-        # exp(ts*(1 - ln ts)); clamp avoids log(0)/negative domain errors.
         ts = torch.clamp(ts, min=1e-6)
         return torch.exp(ts * (1.0 - torch.log(ts)))
 
-    def forward(self, x_t, h, ts=1.0, M=None):
+    def forward(self, x_t, h, ts=1.0, M=None, step_count=0):
+        """
+        M: running accumulator (unnormalized sum), or None at t=0
+        step_count: how many steps have been accumulated into M so far
+        Returns: new_h, new_M, new_step_count
+        """
         combined = torch.cat([x_t, h], dim=1)
         feat = self.backbone(combined)
 
@@ -219,21 +231,18 @@ class ConvCfCIncepCell(nn.Module):
             omega_ts = self._omega_ts(ts)
             Tinterp = t_a * omega_ts + t_b
             M = Tinterp if M is None else M + Tinterp
-            gate = self.sigmoid(M)
+            step_count = step_count + 1
+            gate = self.sigmoid(M / step_count)   # running AVERAGE, bounded magnitude
         else:
             gate = self.sigmoid(t_a * ts + t_b)
             M = None
+            step_count = 0
 
         new_h = ff1 * (1.0 - gate) + gate * ff2
-        return new_h, M
+        return new_h, M, step_count
 
 
 class ConvCfCIncep(nn.Module):
-    """
-    CfC translator with Inception-style multi-scale backbone.
-    Chunks by actual frame count T; each CfC step = one real encoder frame.
-    use_dfa threads through to both the forward and (if bidirectional) backward cell.
-    """
     def __init__(self, channel_in, channel_hid, N_T, groups=8, T=10,
                  C_per_frame=64, bidirectional=False, use_dfa=False):
         super(ConvCfCIncep, self).__init__()
@@ -256,6 +265,7 @@ class ConvCfCIncep(nn.Module):
         x_steps = torch.chunk(x, self.T, dim=1)
         h = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
         M = None
+        step_count = 0
 
         def _ts_at(t):
             if ts is None or t == 0:
@@ -264,19 +274,21 @@ class ConvCfCIncep(nn.Module):
 
         fwd_hidden = []
         for t in range(self.T):
-            h, M = self.cell(x_steps[t], h, ts=_ts_at(t), M=M)
+            h, M, step_count = self.cell(x_steps[t], h, ts=_ts_at(t), M=M, step_count=step_count)
             fwd_hidden.append(h)
 
         if self.bidirectional:
             h_bwd = torch.zeros(B, self.cell.ff1.out_channels, H, W, device=x.device)
             M_bwd = None
+            step_count_bwd = 0
             bwd_hidden = []
             for t in reversed(range(self.T)):
                 if ts is None or t == self.T - 1:
                     ts_b = torch.ones(B, 1, 1, 1, device=x.device)
                 else:
                     ts_b = ts[:, t].view(B, 1, 1, 1)
-                h_bwd, M_bwd = self.bwd_cell(x_steps[t], h_bwd, ts=ts_b, M=M_bwd)
+                h_bwd, M_bwd, step_count_bwd = self.bwd_cell(
+                    x_steps[t], h_bwd, ts=ts_b, M=M_bwd, step_count=step_count_bwd)
                 bwd_hidden.append(h_bwd)
             bwd_hidden = list(reversed(bwd_hidden))
             out = torch.stack([
@@ -312,27 +324,27 @@ class CfCTemporalCell(nn.Module):
 
     @staticmethod
     def _omega_ts(ts):
-        # torch-native — ts is a (B,1,1,1) tensor, not a Python float
         ts = torch.clamp(ts, min=1e-6)
         return torch.exp(ts * (1.0 - torch.log(ts)))
 
-    def forward(self, x_t, h, ts=1.0, M=None):
+    def forward(self, x_t, h, ts=1.0, M=None, step_count=0):
         combined = torch.cat([x_t, h], dim=1)
-        feat     = self.backbone(combined)
-
-        ff1      = self.tanh(self.ff1(feat))
-        ff2      = self.tanh(self.ff2(feat))
-        t_a      = self.time_a(feat)
-        t_b      = self.time_b(feat)
+        feat = self.backbone(combined)
+        ff1 = self.tanh(self.ff1(feat))
+        ff2 = self.tanh(self.ff2(feat))
+        t_a = self.time_a(feat)
+        t_b = self.time_b(feat)
 
         if self.use_dfa:
             omega_ts = self._omega_ts(ts)
             Tinterp = t_a * omega_ts + t_b
             M = Tinterp if M is None else M + Tinterp
-            gate = self.sigmoid(M)
+            step_count = step_count + 1
+            gate = self.sigmoid(M / step_count)
         else:
             gate = self.sigmoid(t_a * ts + t_b)
             M = None
+            step_count = 0
 
         new_h = ff1 * (1.0 - gate) + gate * ff2
-        return new_h, M
+        return new_h, M, step_count
