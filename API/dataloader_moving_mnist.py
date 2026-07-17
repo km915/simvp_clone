@@ -144,13 +144,13 @@ class MovingMNIST(data.Dataset):
 
 
 def load_data(batch_size, val_batch_size, data_root, num_workers,
-              irregular=False, g_max=4, **kwargs):
+              n_frames_output=10, irregular=False, g_max=4, **kwargs):
 
     train_set = MovingMNIST(root=data_root, is_train=True,
-                            n_frames_input=10, n_frames_output=10, num_objects=[2],
+                            n_frames_input=10, n_frames_output=n_frames_output, num_objects=[2],
                             irregular=irregular, g_max=g_max)
     test_set = MovingMNIST(root=data_root, is_train=False,
-                           n_frames_input=10, n_frames_output=10, num_objects=[2],
+                           n_frames_input=10, n_frames_output=n_frames_output, num_objects=[2],
                            irregular=irregular, g_max=g_max)
 
     dataloader_train = torch.utils.data.DataLoader(
