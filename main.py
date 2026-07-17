@@ -5,7 +5,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import sys
-print("RAW ARGV:", sys.argv)
+# print("RAW ARGV:", sys.argv)
 
 def create_parser():
     parser = argparse.ArgumentParser()
